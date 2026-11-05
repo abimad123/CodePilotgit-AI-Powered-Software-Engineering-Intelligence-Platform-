@@ -21,10 +21,15 @@ class GithubClientTest {
     KeyPair keys;
     AtomicBoolean slow = new AtomicBoolean();
     AtomicBoolean rateLimited = new AtomicBoolean();
+    AtomicBoolean oauthDenied = new AtomicBoolean();
+    AtomicBoolean installationMissing = new AtomicBoolean();
     @BeforeEach void setUp() throws Exception {
         keys = KeyPairGenerator.getInstance("RSA").generateKeyPair();
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/login/oauth/access_token", exchange -> respond(exchange, 200, "{\"access_token\":\"user-token\"}"));
+        server.createContext("/login/oauth/access_token", exchange -> {
+            if (oauthDenied.get()) respond(exchange, 200, "{\"error\":\"bad_verification_code\"}");
+            else respond(exchange, 200, "{\"access_token\":\"user-token\"}");
+        });
         server.createContext("/user/installations", exchange -> {
             if (slow.get()) { try { Thread.sleep(900); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } }
             if (rateLimited.get()) {
@@ -33,7 +38,10 @@ class GithubClientTest {
             } else respond(exchange, 200, "{\"installations\":[{\"id\":42}]}");
         });
         server.createContext("/app/installations/42/access_tokens", exchange -> respond(exchange, 200, "{\"token\":\"installation-token\"}"));
-        server.createContext("/app/installations/42", exchange -> respond(exchange, 200, "{\"id\":42,\"account\":{\"login\":\"team\",\"type\":\"Organization\"}}"));
+        server.createContext("/app/installations/42", exchange -> {
+            if (installationMissing.get()) respond(exchange, 404, "{\"message\":\"private detail\"}");
+            else respond(exchange, 200, "{\"id\":42,\"account\":{\"login\":\"team\",\"type\":\"Organization\"}}");
+        });
         server.createContext("/installation/repositories", exchange -> respond(exchange, 200,
                 "{\"repositories\":[{\"id\":7,\"full_name\":\"team/repo\",\"description\":\"example\",\"default_branch\":\"main\",\"private\":true,\"html_url\":\"https://github.com/team/repo\"}]}"));
         server.start();
@@ -61,6 +69,16 @@ class GithubClientTest {
         rateLimited.set(false); slow.set(true);
         ApiException timeout = assertThrows(ApiException.class, () -> client.userCanAccessInstallation("user-token", 42));
         assertEquals("UPSTREAM_TIMEOUT", timeout.code);
+    }
+    @Test void oauthFailureAndMissingInstallationDoNotExposeUpstreamBody() {
+        oauthDenied.set(true);
+        ApiException oauth = assertThrows(ApiException.class, () -> client.userToken("invalid"));
+        assertEquals("UPSTREAM_FAILURE", oauth.code);
+        assertFalse(oauth.getMessage().contains("bad_verification_code"));
+        oauthDenied.set(false); installationMissing.set(true);
+        ApiException missing = assertThrows(ApiException.class, () -> client.installation(42));
+        assertEquals("GITHUB_NOT_FOUND", missing.code);
+        assertFalse(missing.getMessage().contains("private detail"));
     }
     private void respond(com.sun.net.httpserver.HttpExchange exchange, int status, String json) throws java.io.IOException {
         byte[] bytes = json.getBytes(StandardCharsets.UTF_8);

@@ -18,7 +18,7 @@ import java.util.Base64;
 import static org.junit.jupiter.api.Assertions.*;
 
 @SpringBootTest
-@Testcontainers(disabledWithoutDocker = true)
+@Testcontainers
 class DatabaseIntegrationTest {
     @Container static PostgreSQLContainer postgres = new PostgreSQLContainer(
             DockerImageName.parse("pgvector/pgvector:0.8.7-pg18-trixie").asCompatibleSubstituteFor("postgres"));

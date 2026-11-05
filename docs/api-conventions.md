@@ -15,12 +15,17 @@ These conventions apply to the Stage 1 backend. Authentication, project, health,
 | GET/PATCH/DELETE | `/api/v1/projects/{projectId}` | Bearer and project role | Detail/update/soft delete. |
 | GET/POST | `/api/v1/projects/{projectId}/members` | Bearer and project role | List/add existing users. |
 | DELETE | `/api/v1/projects/{projectId}/members/{userId}` | Bearer and project role | Remove member subject to owner/admin rules. |
-| POST | `/api/v1/projects/{projectId}/github/installations/start` | OWNER/ADMIN | Begin GitHub user authorization for an intended installation ID. |
-| POST | `/api/v1/projects/{projectId}/github/installations/complete` | Same user and project | Exchange code, verify GitHub user access, persist installation association. |
+| POST | `/api/v1/projects/{projectId}/github/installations/start` | OWNER/ADMIN | Return a GitHub App installation URL with a random, project-bound state. |
+| POST | `/api/v1/projects/{projectId}/github/installations/setup` | Initiating OWNER/ADMIN | Bind GitHub's setup `installation_id` to the state and return a user authorization URL. |
+| POST | `/api/v1/projects/{projectId}/github/installations/complete` | Initiating OWNER/ADMIN | Exchange OAuth code, verify user and App installation access, then persist association. |
+| POST | `/api/v1/projects/{projectId}/github/installations/cancel` | Initiating OWNER/ADMIN | Consume an abandoned state. |
+| GET | `/api/v1/projects/{projectId}/github/installations` | Project member | Return the project's installation connection status. |
 | GET/POST | `/api/v1/projects/{projectId}/github/repositories` | Member for GET; OWNER/ADMIN for POST | List installation repositories/connect one after validation. Requires `installationId` query for GET. |
 | GET | `/actuator/health`, `/actuator/health/readiness`, `/actuator/health/liveness` | Public | Status only, no details. |
 
 Project list currently uses bounded `page` and `size` offset pagination; this differs from the Stage 0 cursor proposal. Cursor pagination can be added when list ordering and scale justify it. The Stage 1 API does not implement asynchronous jobs or `Idempotency-Key` yet.
+
+The GitHub setup and OAuth callback endpoints require the application's bearer token. The frontend must forward GitHub's query parameters to them; no frontend callback page exists yet. See [GitHub handoff contract](github-handoff.md).
 
 ## Public API
 

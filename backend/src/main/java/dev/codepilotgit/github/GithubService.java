@@ -16,7 +16,8 @@ import java.util.*;
 
 @Service
 public class GithubService {
-    public record StartView(String authorizationUrl) {}
+    public record StartView(String installationUrl) {}
+    public record AuthorizationView(String authorizationUrl) {}
     public record InstallationView(long installationId, String accountLogin, String accountType) {}
     public record RepositoryView(long repositoryId, String fullName, String description, String defaultBranch, boolean privateRepository, String htmlUrl) {}
     private final ProjectService projects;
@@ -26,41 +27,56 @@ public class GithubService {
     private final ProjectGithubInstallationRepository links;
     private final ProjectRepositoryConnectionRepository repositories;
     private final SecureRandom random = new SecureRandom();
-    private final String clientId, redirectUri, oauthBase;
+    private final String clientId, appName, redirectUri, oauthBase;
     public GithubService(ProjectService projects, GithubClient client, GithubConnectionStateRepository states,
                          GithubInstallationRepository installations, ProjectGithubInstallationRepository links,
                          ProjectRepositoryConnectionRepository repositories,
                          @Value("${app.github.client-id:}") String clientId,
+                         @Value("${app.github.app-name:}") String appName,
                          @Value("${app.github.redirect-uri:}") String redirectUri,
                          @Value("${app.github.oauth-base-url:https://github.com}") String oauthBase) {
         this.projects = projects; this.client = client; this.states = states; this.installations = installations;
         this.links = links; this.repositories = repositories;
-        this.clientId = clientId; this.redirectUri = redirectUri; this.oauthBase = oauthBase;
+        this.clientId = clientId; this.appName = appName; this.redirectUri = redirectUri; this.oauthBase = oauthBase;
     }
     @Transactional
-    public StartView start(UUID actor, UUID projectId, long installationId) {
+    public StartView start(UUID actor, UUID projectId) {
         projects.requireRole(actor, projectId, ProjectMembership.Role.OWNER, ProjectMembership.Role.ADMIN);
-        if (!client.configured() || clientId.isBlank() || redirectUri.isBlank()) throw unavailable();
-        if (installationId <= 0) throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "Invalid installation ID.");
+        if (!client.configured() || clientId.isBlank() || !appName.matches("[A-Za-z0-9-]+") || redirectUri.isBlank()) throw unavailable();
         byte[] bytes = new byte[32]; random.nextBytes(bytes);
         String raw = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
-        states.save(new GithubConnectionState(hash(raw), projectId, actor, installationId));
-        String url = UriComponentsBuilder.fromUriString(oauthBase).path("/login/oauth/authorize")
-                .queryParam("client_id", clientId).queryParam("redirect_uri", redirectUri)
+        states.save(new GithubConnectionState(hash(raw), projectId, actor));
+        String url = UriComponentsBuilder.fromUriString(oauthBase).pathSegment("apps", appName, "installations", "new")
                 .queryParam("state", raw).build().encode().toUriString();
         return new StartView(url);
     }
     @Transactional
+    public AuthorizationView setup(UUID actor, UUID projectId, String state, Long installationId) {
+        GithubConnectionState attempt = validState(actor, projectId, state);
+        if (installationId == null || installationId <= 0)
+            throw new ApiException(HttpStatus.BAD_REQUEST, "MISSING_INSTALLATION_ID", "GitHub installation ID is missing or invalid.");
+        if (attempt.intendedInstallationId != null) throw invalidState();
+        attempt.intendedInstallationId = installationId;
+        String url = UriComponentsBuilder.fromUriString(oauthBase).path("/login/oauth/authorize")
+                .queryParam("client_id", clientId).queryParam("redirect_uri", redirectUri)
+                .queryParam("state", state).build().encode().toUriString();
+        return new AuthorizationView(url);
+    }
+    @Transactional
+    public void cancel(UUID actor, UUID projectId, String state) {
+        GithubConnectionState attempt = validState(actor, projectId, state);
+        attempt.consumedAt = Instant.now();
+    }
+    @Transactional
     public InstallationView complete(UUID actor, UUID projectId, String state, String code) {
-        GithubConnectionState attempt = states.findByStateHash(hash(state))
-                .orElseThrow(GithubService::invalidState);
-        if (attempt.consumedAt != null || !attempt.expiresAt.isAfter(Instant.now()) || !attempt.userId.equals(actor)
-                || !attempt.projectId.equals(projectId)) throw invalidState();
-        projects.requireRole(actor, attempt.projectId, ProjectMembership.Role.OWNER, ProjectMembership.Role.ADMIN);
+        GithubConnectionState attempt = validState(actor, projectId, state);
+        if (attempt.intendedInstallationId == null) throw invalidState();
         String userToken = client.userToken(code);
         if (!client.userCanAccessInstallation(userToken, attempt.intendedInstallationId))
             throw new ApiException(HttpStatus.FORBIDDEN, "GITHUB_INSTALLATION_DENIED", "GitHub user cannot access this installation.");
         GithubClient.InstallationInfo info = client.installation(attempt.intendedInstallationId);
+        if (info.id() != attempt.intendedInstallationId) throw new ApiException(HttpStatus.BAD_GATEWAY,
+                "UPSTREAM_FAILURE", "GitHub installation verification failed.");
         GithubInstallation installation = installations.findByInstallationId(info.id()).orElseGet(() ->
                 installations.save(new GithubInstallation(info.id(), info.accountLogin(), info.accountType())));
         ProjectGithubInstallation.Key key = new ProjectGithubInstallation.Key();
@@ -68,6 +84,20 @@ public class GithubService {
         if (!links.existsById(key)) links.save(new ProjectGithubInstallation(attempt.projectId, installation.id));
         attempt.consumedAt = Instant.now();
         return new InstallationView(info.id(), info.accountLogin(), info.accountType());
+    }
+    @Transactional(readOnly = true)
+    public List<InstallationView> installations(UUID actor, UUID projectId) {
+        projects.requireMember(actor, projectId);
+        return links.findByProjectId(projectId).stream()
+                .map(link -> installations.findById(link.githubInstallationId).orElseThrow(GithubService::notFound))
+                .map(item -> new InstallationView(item.installationId, item.accountLogin, item.accountType)).toList();
+    }
+    private GithubConnectionState validState(UUID actor, UUID projectId, String state) {
+        GithubConnectionState attempt = states.findByStateHash(hash(state)).orElseThrow(GithubService::invalidState);
+        if (attempt.consumedAt != null || !attempt.expiresAt.isAfter(Instant.now()) || !attempt.userId.equals(actor)
+                || !attempt.projectId.equals(projectId)) throw invalidState();
+        projects.requireRole(actor, projectId, ProjectMembership.Role.OWNER, ProjectMembership.Role.ADMIN);
+        return attempt;
     }
     @Transactional(readOnly = true)
     public List<RepositoryView> list(UUID actor, UUID projectId, long installationId, int page) {

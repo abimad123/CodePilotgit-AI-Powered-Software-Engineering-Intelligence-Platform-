@@ -1,6 +1,7 @@
-"""Exercise Stage 1 HTTP flows against a local development database.
+"""Exercise Stage 1 HTTP flows against an isolated, disposable database.
 
-Creates random test users and one soft-deleted project. Never prints credentials.
+Creates run-identified users and a project; the public API has no user deletion.
+Never point this at a database containing unrelated development records.
 """
 
 import argparse
@@ -34,9 +35,9 @@ def expect(actual, wanted, label):
 def main(base):
     suffix = secrets.token_hex(8)
     password = secrets.token_urlsafe(24)
-    a = {"name": "Smoke Owner", "email": f"smoke-owner-{suffix}@example.test", "password": password}
-    b = {"name": "Smoke Member", "email": f"smoke-member-{suffix}@example.test", "password": password}
-    c = {"name": "Smoke Admin", "email": f"smoke-admin-{suffix}@example.test", "password": password}
+    a = {"name": f"Smoke Owner {suffix}", "email": f"smoke-owner-{suffix}@example.test", "password": password}
+    b = {"name": f"Smoke Member {suffix}", "email": f"smoke-member-{suffix}@example.test", "password": password}
+    c = {"name": f"Smoke Admin {suffix}", "email": f"smoke-admin-{suffix}@example.test", "password": password}
     for path in ("/actuator/health", "/actuator/health/readiness", "/actuator/health/liveness"):
         status, body = call(base, "GET", path)
         expect(status, 200, path)
@@ -139,7 +140,7 @@ def main(base):
         concurrent = list(pool.map(lambda _: call(base, "POST", "/api/v1/auth/refresh", {"refreshToken": member_tokens["refreshToken"]})[0], range(2)))
     assert sorted(concurrent) == [200, 401], f"concurrent refresh expected one success and one rejection, got {concurrent}"
     print("PASS concurrent refresh: one HTTP 200, one HTTP 401")
-    status, _ = call(base, "POST", project_path + "/github/installations/start", {"installationId": 42}, owner_access)
+    status, _ = call(base, "POST", project_path + "/github/installations/start", token=owner_access)
     expect(status, 503, "GitHub unconfigured")
     status, _ = call(base, "DELETE", project_path, token=owner_access)
     expect(status, 204, "owner soft-deletes project")
@@ -150,5 +151,7 @@ def main(base):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://127.0.0.1:8080")
+    parser.add_argument("--disposable-database", action="store_true", required=True,
+                        help="Confirm this backend uses an isolated disposable database; the API cannot delete smoke users")
     args = parser.parse_args()
     main(args.base_url.rstrip("/"))

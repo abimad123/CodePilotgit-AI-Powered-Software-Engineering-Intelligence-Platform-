@@ -1,68 +1,45 @@
-# Stage 1 implementation status
+# Stage 1 closure verification
 
-**Status: PARTIAL.** The backend compiled and packaged in Docker, started with PostgreSQL 18, applied Flyway V1 to an empty schema, passed Hibernate schema validation, and passed live API and database checks. The full Testcontainers test was skipped because the Maven container could not access Docker; automatic approval review rejected mounting the host Docker socket due to its broad daemon control. A safer live PostgreSQL integration test passed against the existing Compose service. The GitHub flow has mock HTTP coverage but no live App credentials or automated post-installation handoff.
+**Status: PARTIAL pending a live GitHub App end-to-end installation and a frontend callback implementation.** The Stage 1 backend handoff, isolated PostgreSQL tests, and mocked GitHub tests are implemented and pass. No Stage 2 functionality is included.
 
-## Modules and scope
+## Implemented modules
 
-- `auth`: registration, login, signed access JWT, hashed/rotating refresh tokens, logout.
-- `user`: local account persistence and current-user profile.
-- `project`: project creation, listing, update, soft delete, and existing-user membership with OWNER/ADMIN/MEMBER rules.
-- `github`: OAuth state, App JWT, user authorization verification, installation association, repository metadata listing and connection. No webhook or cloning.
+- `auth`: registration, login, signed access JWTs, hashed and rotating refresh tokens, logout.
+- `user`: local account persistence and safe profile.
+- `project`: project CRUD, soft delete, membership and OWNER/ADMIN/MEMBER rules.
+- `github`: App installation handoff using installation URL state, setup ID binding, explicit user OAuth, GitHub verification, project association, connection status, and repository metadata. No webhook or cloning.
 - `common`: security filter chain, CORS, request ID, centralized API errors.
-- `V1__foundation.sql`: eight Stage 1 tables, constraints, indexes, and foreign keys.
+- Flyway V1 defines Stage 1 tables; V2 makes the intended installation ID nullable until setup handoff.
 
-## Environment variables
-
-| Variable | Purpose |
-| --- | --- |
-| `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Compose database initialization; password must be unique and private. |
-| `DATABASE_URL`, `DATABASE_USER`, `DATABASE_PASSWORD` | Backend JDBC connection; Compose maps them from PostgreSQL values. |
-| `JWT_SECRET_BASE64` | Required base64-encoded random signing key, at least 32 bytes. |
-| `JWT_ISSUER`, `JWT_AUDIENCE`, `ACCESS_TOKEN_MINUTES`, `REFRESH_TOKEN_DAYS` | Token claims and lifetimes. |
-| `CORS_ORIGINS` | Comma-separated browser origin allowlist. |
-| `BACKEND_PORT`, `POSTGRES_PORT`, `REDIS_PORT` | Optional localhost port mappings. |
-| `GITHUB_APP_ID`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_PRIVATE_KEY`, `GITHUB_REDIRECT_URI` | Optional GitHub App user authorization and installation API. All are needed to connect an App. |
-| `GITHUB_API_BASE_URL`, `GITHUB_OAUTH_BASE_URL`, `GITHUB_CONNECT_TIMEOUT_MS`, `GITHUB_READ_TIMEOUT_MS` | Optional GitHub endpoint and timeout settings, useful for local mock testing. |
-| `GITHUB_APP_NAME`, `GITHUB_WEBHOOK_SECRET`, `AI_PROVIDER_API_KEY` | Reserved for later flows; unused by Stage 1 backend. |
-
-## Verification performed
+## Verification on 2026-11-05
 
 | Check | Result |
 | --- | --- |
-| `docker compose --env-file .env.example config --quiet` | PASSED |
-| Docker Maven build (`mvn -DskipTests package`) | PASSED; Java 21 compilation and JAR packaging |
-| `docker compose up -d --build` | Initial start FAILED because host port 5432 was unavailable; PASSED after changing ignored local ports to 15432/16379/18080 |
-| Flyway V1 on empty PostgreSQL 18.6 | PASSED; startup log reports one migration applied |
-| Hibernate `ddl-auto=validate` and Actuator readiness | PASSED; application started and readiness returned HTTP 200 |
-| `docker run --rm --network codepilotgit_default --env-file .env codepilotgit-build mvn -B -ntp test` | PASSED: 21 discovered, 19 passed, 2 skipped (Testcontainers) |
-| `DatabaseLiveIntegrationTest` against Compose PostgreSQL | PASSED: 3 tests, no failures |
-| `python scripts/smoke-backend.py --base-url http://127.0.0.1:18080` | PASSED: 42 checks, including auth, role isolation, concurrent refresh, CORS, and health |
-| Full Testcontainers execution | BLOCKED by automatic approval review of host Docker socket mount |
-| Live GitHub App connection | NOT RUN; no App credentials supplied |
+| Host Maven compilation and package | PASS; Java 26 running a Java 21 release build. |
+| Full host JUnit suite | PASS; 31 discovered, 28 executed, 0 failed, 3 conditionally skipped `DatabaseLiveIntegrationTest` methods because `DATABASE_URL` was unset for this run. |
+| Previously skipped `DatabaseIntegrationTest` methods | PASS; 2 executed against a Testcontainers PostgreSQL 18 container with database `test`. Docker Desktop's native `npipe:////./pipe/docker_engine` was discovered. No host socket was mounted into a container. |
+| Testcontainers cleanup | PASS; the container started and no Testcontainers-labelled containers remained after the run. |
+| Live PostgreSQL integration tests | PASS; all 3 conditionally skipped methods were executed in a separate run against a disposable Compose database and rolled back their rows. Across these two runs, every one of the 31 JUnit methods executed and passed. |
+| Flyway V1 and V2 | PASS; both applied on the isolated Compose database and the fresh Testcontainers database. Hibernate schema validation passed. |
+| GitHub mocked HTTP/client and service tests | PASS; 3 HTTP client tests and 13 service tests in the full suite. No live GitHub credentials used. |
+| Compose configuration | PASS with `.env.example` and disposable private environment. |
+| Isolated backend Compose startup and health | PASS; backend, PostgreSQL, and Redis healthy; readiness returned `UP`, Redis returned `PONG`. |
+| Isolated authentication/project HTTP smoke | PASS; 43 checks including JWT rejection, refresh rotation and revocation, concurrent refresh, OWNER/ADMIN/MEMBER authorization, cross-project isolation, CORS, and health. |
+| Live GitHub App installation and frontend redirect/callback | NOT RUN; no real App credentials or frontend routes supplied. |
 
-## Reproduction commands
+The first host Testcontainers attempt failed after the PostgreSQL container started because PostgreSQL 18 rejected the host JVM timezone alias `Asia/Calcutta`. The Maven Surefire test JVM now uses UTC, and the rerun passed. The original Docker socket mount request was rejected by automatic review; the host native pipe path resolved the two skipped tests without changing Docker security settings.
 
-```powershell
-docker compose --env-file .env.example config --quiet
-cd backend
-mvn -B -ntp test
-mvn -B -ntp package
-cd ..
-docker compose up -d --build
-docker compose ps
-curl.exe -i http://localhost:8080/actuator/health/readiness
-```
+The disposable database contained exactly three run-identified smoke users and one soft-deleted smoke project after the HTTP test. It had no unrelated records. The smoke test requires `--disposable-database` because the public API cannot delete those users. The existing development Compose project and database were not changed.
 
-Set valid secrets in `.env` before startup. The Testcontainers test is available for environments where running it is approved. The live PostgreSQL integration test covers refresh, project persistence, uniqueness, and foreign-key constraints without Docker socket access.
+## GitHub handoff
 
-## Known gaps before completion
+The OWNER/ADMIN starts with no installation ID. The server returns GitHub's App installation URL with a random state bound to actor and project. After GitHub redirects to the configured setup URL, the authenticated frontend forwards `state` and `installation_id` to the setup API. The backend binds that ID once and returns an explicit OAuth authorization URL. The frontend forwards OAuth `code` and `state` to the completion API. Completion rechecks the initiating actor's project role, exchanges the code, verifies user installation access and App installation identity through GitHub, then links the installation only to the initiating project and consumes state. Cancel also consumes state; abandoned state expires after ten minutes. See [frontend handoff contract](github-handoff.md) and [security design](security.md).
 
-- The Testcontainers database test remains unexecuted because the approved test environment does not expose a Docker socket. Automatic approval review rejected mounting it, citing broad Docker daemon control. User approval is required for that specific mount if it must be run in this workspace.
-- A local mock HTTP test passed for GitHub JWT signing, OAuth token exchange, installation lookup, repository metadata, rate limits, and timeouts. No real App credentials were available. Authorization-error paths need further tests.
-- No frontend callback page exists; the GitHub OAuth code/state must be forwarded manually for live development testing.
-- Auth rate limiting, email verification, password reset, access-token revocation, production TLS/key management, and audit history are not implemented.
-- No Stage 2 AI, scan, repository clone, PR review, webhook processing, or background jobs were started.
+## Limits and next gate
 
-## Stage 2 dependency
+- No live GitHub App installation was performed. The backend is verified with mocked GitHub HTTP and service tests; credentials and real frontend routes are needed for end-to-end validation.
+- The frontend is documentation only in Stage 1; `/github/setup` and `/github/callback` are not implemented pages.
+- Auth rate limiting, email verification, password reset, access-token revocation, production TLS/key management, and audit history remain production hardening work.
+- No repository clone, webhook processing, scan, AI analysis, or background job behavior exists in Stage 1.
 
-First finish Stage 1 verification and fix any discovered failures. Only then add repository ingestion and analysis work behind the existing project boundary.
+Do not begin Stage 2 until the remaining live integration gate has been reviewed and approved.

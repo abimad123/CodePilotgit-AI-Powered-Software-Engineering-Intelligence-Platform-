@@ -41,17 +41,20 @@ docker compose exec redis redis-cli ping
 
 If you changed `POSTGRES_USER` or `POSTGRES_DB`, substitute those values in the `psql` command. The init script runs only when the volume is new. Flyway migrations are versioned under `backend/src/main/resources/db/migration`; do not edit a migration after it has been applied. Keep `.env` private. The `.env.example` password and JWT secret are placeholders and must be replaced before startup.
 
-Run unit and PostgreSQL integration tests with `mvn -f backend/pom.xml test`. Testcontainers requires Docker Engine; it skips the PostgreSQL integration test when Docker is unavailable. Use `mvn -f backend/pom.xml package` to build the JAR. The GitHub App setup and token strategy are in [security](security.md).
+Run unit and PostgreSQL integration tests directly on the host with `mvn -f backend/pom.xml test`. Use a host JDK 21+ and Maven 3.9+, and start Docker Desktop's Linux engine. On Windows, Testcontainers discovers Docker Desktop's native named pipe (observed as `npipe:////./pipe/docker_engine` here) without setting `DOCKER_HOST` or mounting the socket into a container. Run `docker info` in the same host shell first. The two `DatabaseIntegrationTest` methods must execute against a Testcontainers-created PostgreSQL container and fail if Docker is unavailable. Testcontainers creates an isolated PostgreSQL database and removes its container after the suite; check `docker ps -a` and the Maven Testcontainers startup/stop logs when verifying cleanup. Use `mvn -f backend/pom.xml package` to build the JAR. The GitHub App setup and token strategy are in [security](security.md).
 
-When Maven is unavailable on the host but Docker Engine works, the build stage can run tests:
+When Maven is unavailable on the host, the build stage can run unit tests, but it cannot run Testcontainers tests without host Docker access:
 
 ```powershell
 docker build --target build -t codepilotgit-build ./backend
-docker run --rm codepilotgit-build mvn -B -ntp test
-python scripts/smoke-backend.py --base-url http://127.0.0.1:8080
+docker run --rm codepilotgit-build mvn -B -ntp -Dtest=GithubServiceTest,GithubClientTest test
 ```
 
-The smoke script creates random development users and soft-deletes its project; it does not remove test users. To run the `DatabaseLiveIntegrationTest` against the existing Compose PostgreSQL service, supply `DATABASE_URL=jdbc:postgresql://postgres:5432/<database>`, `DATABASE_USER`, `DATABASE_PASSWORD`, and `JWT_SECRET_BASE64` to the Maven test process and attach it to the `codepilotgit_default` network. Use a disposable development database and never commit those values.
+The HTTP smoke script creates run-identified users and soft-deletes only its own project. The public API cannot delete users, so invoke it only against a separate, disposable Compose/database instance and pass `--disposable-database`; never run it against a database containing unrelated development records. The random suffix makes repeat runs collision-free, but test users remain until the entire disposable database is retired. To run `DatabaseLiveIntegrationTest` against a PostgreSQL service, supply `DATABASE_URL`, `DATABASE_USER`, `DATABASE_PASSWORD`, and `JWT_SECRET_BASE64` to the Maven test process. Its tests roll back their own rows. Use a disposable development database and never commit secrets.
+
+```powershell
+python scripts/smoke-backend.py --base-url http://127.0.0.1:8080 --disposable-database
+```
 
 ```powershell
 docker compose down
@@ -69,4 +72,4 @@ docker compose down
 
 ## Verification status
 
-Compose validation, Docker build/startup, Flyway V1 migration on an empty database, Hibernate schema validation, 19 executed JUnit tests, and 42 HTTP smoke checks passed in this workspace. Two Testcontainers tests were skipped because the Maven container had no Docker socket; host socket mounting was rejected by automatic approval review. See [Stage 1 implementation](stage-1-implementation.md).
+See [Stage 1 implementation](stage-1-implementation.md) for the final host-run Testcontainers, live PostgreSQL, Compose, and HTTP smoke results.

@@ -1,0 +1,57 @@
+spring:
+  application:
+    name: codepilotgit-backend
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/codepilotgit}
+    username: ${DATABASE_USER:codepilotgit}
+    password: ${DATABASE_PASSWORD}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate.jdbc.time_zone: UTC
+  flyway:
+    enabled: true
+  jackson:
+    time-zone: UTC
+management:
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db
+  endpoints:
+    web:
+      exposure:
+        include: health
+server:
+  error:
+    include-message: never
+    include-stacktrace: never
+logging:
+  structured:
+    format:
+      console: ecs
+app:
+  jwt:
+    secret: ${JWT_SECRET_BASE64}
+    issuer: ${JWT_ISSUER:codepilotgit}
+    audience: ${JWT_AUDIENCE:codepilotgit-api}
+    access-minutes: ${ACCESS_TOKEN_MINUTES:15}
+    refresh-days: ${REFRESH_TOKEN_DAYS:14}
+  cors-origins: ${CORS_ORIGINS:http://localhost:5173}
+  github:
+    app-id: ${GITHUB_APP_ID:}
+    app-name: ${GITHUB_APP_NAME:}
+    client-id: ${GITHUB_CLIENT_ID:}
+    client-secret: ${GITHUB_CLIENT_SECRET:}
+    private-key: ${GITHUB_PRIVATE_KEY:}
+    redirect-uri: ${GITHUB_REDIRECT_URI:}
+    oauth-base-url: ${GITHUB_OAUTH_BASE_URL:https://github.com}
+    api-base-url: ${GITHUB_API_BASE_URL:https://api.github.com}
+    connect-timeout-ms: ${GITHUB_CONNECT_TIMEOUT_MS:5000}
+    read-timeout-ms: ${GITHUB_READ_TIMEOUT_MS:10000}
